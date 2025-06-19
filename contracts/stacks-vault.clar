@@ -245,3 +245,116 @@
     (ok true)
   )
 )
+
+;; YIELD-GENERATING STAKING MECHANISM
+
+(define-public (stake-nft (token-id uint))
+  ;; Stakes an NFT to begin earning yield rewards
+  (let ((token (unwrap! (get-token-info token-id) err-invalid-token)))
+    (asserts! (is-eq tx-sender (get owner token)) err-not-token-owner)
+    (asserts! (not (get is-staked token)) err-already-staked)
+    (map-set tokens { token-id: token-id }
+      (merge token {
+        is-staked: true,
+        stake-timestamp: stacks-block-height,
+      })
+    )
+    (map-set staking-rewards { token-id: token-id } {
+      accumulated-yield: u0,
+      last-claim: stacks-block-height,
+    })
+    (var-set total-staked (+ (var-get total-staked) u1))
+    (ok true)
+  )
+)
+
+(define-public (unstake-nft (token-id uint))
+  ;; Unstakes an NFT and claims final rewards
+  (let (
+      (token (unwrap! (get-token-info token-id) err-invalid-token))
+      (rewards (unwrap! (get-staking-rewards token-id) err-not-staked))
+    )
+    (asserts! (is-eq tx-sender (get owner token)) err-not-token-owner)
+    (asserts! (get is-staked token) err-not-staked)
+    ;; Claim final rewards before unstaking
+    (try! (claim-staking-rewards token-id))
+    (map-set tokens { token-id: token-id }
+      (merge token {
+        is-staked: false,
+        stake-timestamp: u0,
+      })
+    )
+    (var-set total-staked (- (var-get total-staked) u1))
+    (ok true)
+  )
+)
+
+(define-private (claim-staking-rewards (token-id uint))
+  ;; Claims accumulated staking rewards for a token
+  (let (
+      (rewards (unwrap! (calculate-rewards token-id) err-not-staked))
+      (token (unwrap! (get-token-info token-id) err-invalid-token))
+    )
+    (asserts! (get is-staked token) err-not-staked)
+    (map-set staking-rewards { token-id: token-id } {
+      accumulated-yield: u0,
+      last-claim: stacks-block-height,
+    })
+    ;; Distribute rewards to NFT owner
+    (as-contract (stx-transfer? rewards (as-contract tx-sender) (get owner token)))
+  )
+)
+
+;; READ-ONLY QUERY FUNCTIONS
+
+(define-read-only (get-token-info (token-id uint))
+  ;; Retrieves comprehensive information about a specific NFT
+  (map-get? tokens { token-id: token-id })
+)
+
+(define-read-only (get-listing (token-id uint))
+  ;; Retrieves marketplace listing information for a token
+  (map-get? token-listings { token-id: token-id })
+)
+
+(define-read-only (get-fractional-shares
+    (token-id uint)
+    (owner principal)
+  )
+  ;; Retrieves fractional ownership share balance for a user
+  (map-get? fractional-ownership {
+    token-id: token-id,
+    owner: owner,
+  })
+)
+
+(define-read-only (get-staking-rewards (token-id uint))
+  ;; Retrieves current staking reward information for a token
+  (map-get? staking-rewards { token-id: token-id })
+)
+
+(define-read-only (calculate-rewards (token-id uint))
+  ;; Calculates total accumulated rewards for a staked NFT
+  (let (
+      (token (unwrap! (get-token-info token-id) err-invalid-token))
+      (rewards (unwrap! (get-staking-rewards token-id) err-not-staked))
+      (blocks-staked (- stacks-block-height (get stake-timestamp token)))
+      (yield-per-block (/ (var-get yield-rate) u52560)) ;; Approximate blocks per year
+      (new-rewards (* blocks-staked yield-per-block))
+    )
+    (ok (+ (get accumulated-yield rewards) new-rewards))
+  )
+)
+
+;; PROTOCOL ADMINISTRATION
+
+(define-read-only (get-protocol-stats)
+  ;; Returns comprehensive protocol statistics
+  (ok {
+    total-supply: (var-get total-supply),
+    total-staked: (var-get total-staked),
+    min-collateral-ratio: (var-get min-collateral-ratio),
+    protocol-fee: (var-get protocol-fee),
+    yield-rate: (var-get yield-rate),
+  })
+)
