@@ -164,3 +164,84 @@
     (ok true)
   )
 )
+
+;; DECENTRALIZED MARKETPLACE
+
+(define-public (list-nft
+    (token-id uint)
+    (price uint)
+  )
+  ;; Lists an NFT for sale on the marketplace
+  (let ((token (unwrap! (get-token-info token-id) err-invalid-token)))
+    (asserts! (> price u0) err-invalid-price)
+    (asserts! (is-eq tx-sender (get owner token)) err-not-token-owner)
+    (asserts! (not (get is-staked token)) err-already-staked)
+    (map-set token-listings { token-id: token-id } {
+      price: price,
+      seller: tx-sender,
+      active: true,
+    })
+    (ok true)
+  )
+)
+
+(define-public (purchase-nft (token-id uint))
+  ;; Purchases an NFT from the marketplace with automatic fee distribution
+  (let (
+      (listing (unwrap! (get-listing token-id) err-listing-not-found))
+      (price (get price listing))
+      (seller (get seller listing))
+      (fee (/ (* price (var-get protocol-fee)) u1000))
+    )
+    (asserts! (get active listing) err-listing-not-found)
+    ;; Execute payment transfers
+    (try! (stx-transfer? price tx-sender seller))
+    (try! (stx-transfer? fee tx-sender (as-contract tx-sender)))
+    ;; Transfer NFT ownership
+    (try! (transfer-nft token-id tx-sender))
+    ;; Deactivate listing
+    (map-set token-listings { token-id: token-id } {
+      price: u0,
+      seller: seller,
+      active: false,
+    })
+    (ok true)
+  )
+)
+
+;; FRACTIONAL OWNERSHIP SYSTEM
+
+(define-public (transfer-shares
+    (token-id uint)
+    (recipient principal)
+    (share-amount uint)
+  )
+  ;; Transfers fractional ownership shares between users
+  (let (
+      (sender-shares (unwrap! (get-fractional-shares token-id tx-sender)
+        err-insufficient-balance
+      ))
+      (current-recipient-shares (default-to { shares: u0 } (get-fractional-shares token-id recipient)))
+      (recipient-new-shares (unwrap! (safe-add (get shares current-recipient-shares) share-amount)
+        err-overflow
+      ))
+    )
+    (asserts! (validate-recipient recipient) err-invalid-recipient)
+    (asserts! (>= (get shares sender-shares) share-amount)
+      err-insufficient-balance
+    )
+    ;; Update sender's share balance
+    (map-set fractional-ownership {
+      token-id: token-id,
+      owner: tx-sender,
+    } { shares: (- (get shares sender-shares) share-amount) }
+    )
+    ;; Update recipient's share balance
+    (map-set fractional-ownership {
+      token-id: token-id,
+      owner: recipient,
+    } { shares: recipient-new-shares }
+    )
+    (ok true)
+  )
+)
